@@ -20,8 +20,8 @@ BOT_TOKEN = "8651719456:AAG1naOEDDLrD6JdeM3r7oVvlfyVJFYZq6Y"
 CHANNEL_ID = -1002161097295
 
 # ID владельцев
-SUPER_ADMIN_IDS = [8434813604, 8524655218]
-OWNER_IDS = [8434813604, 8524655218]
+SUPER_ADMIN_IDS = [8434813604, 8524655218, 1513619439]  # Добавлен новый ID
+OWNER_IDS = [8434813604, 8524655218, 1513619439]  # Добавлен новый ID
 
 # Настройки рабочего времени (МСК)
 WORK_START_HOUR = 9   # 9:00
@@ -264,7 +264,11 @@ def save_cooldown(time: datetime):
     with open(COOLDOWN_FILE, "w", encoding="utf-8") as f:
         json.dump({"last_post_time": time.isoformat()}, f)
 
-def get_cooldown_remaining() -> int:
+def get_cooldown_remaining(user_id: int = None) -> int:
+    # Для владельцев и суперадминов кулдауна нет
+    if user_id and is_owner(user_id):
+        return 0
+    
     last_time = load_cooldown()
     if last_time is None:
         return 0
@@ -272,7 +276,10 @@ def get_cooldown_remaining() -> int:
     remaining = int(TASK_COOLDOWN_SECONDS - elapsed)
     return max(0, remaining)
 
-def set_cooldown():
+def set_cooldown(user_id: int = None):
+    # Для владельцев и суперадминов кулдаун не ставим
+    if user_id and is_owner(user_id):
+        return
     save_cooldown(datetime.now())
 
 def is_allowed(user_id: int) -> bool:
@@ -431,18 +438,22 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def start_task_creation(query, context):
-    # Проверка рабочего времени
-    is_working, working_msg = is_working_time()
-    if not is_working:
-        await query.answer()
-        await query.edit_message_text(
-            working_msg,
-            parse_mode="HTML",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Назад", callback_data="back_to_main")]])
-        )
-        return MAIN_MENU
+    uid = query.from_user.id
     
-    remaining = get_cooldown_remaining()
+    # Проверка рабочего времени (для владельцев пропускаем)
+    if not is_owner(uid):
+        is_working, working_msg = is_working_time()
+        if not is_working:
+            await query.answer()
+            await query.edit_message_text(
+                working_msg,
+                parse_mode="HTML",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Назад", callback_data="back_to_main")]])
+            )
+            return MAIN_MENU
+    
+    # Проверка кулдауна (для владельцев пропускаем)
+    remaining = get_cooldown_remaining(uid)
     if remaining > 0:
         mins = remaining // 60
         secs = remaining % 60
@@ -535,15 +546,18 @@ async def handle_custom_platform(update: Update, context: ContextTypes.DEFAULT_T
 
 
 async def confirm_task(query, context):
-    # Еще раз проверяем рабочее время перед публикацией
-    is_working, working_msg = is_working_time()
-    if not is_working:
-        await query.edit_message_text(
-            working_msg,
-            parse_mode="HTML",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Назад", callback_data="back_to_main")]])
-        )
-        return
+    uid = query.from_user.id
+    
+    # Еще раз проверяем рабочее время перед публикацией (для владельцев пропускаем)
+    if not is_owner(uid):
+        is_working, working_msg = is_working_time()
+        if not is_working:
+            await query.edit_message_text(
+                working_msg,
+                parse_mode="HTML",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Назад", callback_data="back_to_main")]])
+            )
+            return
     
     d = context.user_data
     if "platform" not in d or "payment" not in d or "description" not in d:
@@ -565,8 +579,8 @@ async def confirm_task(query, context):
         f"<b>Описание:</b> {description}"
     )
 
-    # Формируем текст для ЛС (как в прошлом коде)
-    prefill = quote(f"Здравствуйте, я из канала MilkyWay, я за заданием {platform} за {payment}₽")
+    # Формируем текст для ЛС (теперь Makers Money)
+    prefill = quote(f"Здравствуйте, я из канала Makers Money, я за заданием {platform} за {payment}₽")
 
     if admin_username:
         respond_url = f"https://t.me/{admin_username}?text={prefill}"
@@ -601,7 +615,7 @@ async def confirm_task(query, context):
             "closed": False,
         }
         save_tasks(tasks)
-        set_cooldown()
+        set_cooldown(uid)  # Передаем ID пользователя для проверки
         context.user_data.clear()
         await query.edit_message_text("✅ Задание опубликовано в канале!")
     except Exception as e:
@@ -718,7 +732,7 @@ async def show_info(query, context):
     tasks = load_tasks()
     active_tasks = len([t for t in tasks.values() if not t.get("closed", False)])
     
-    remaining = get_cooldown_remaining()
+    remaining = get_cooldown_remaining(uid)
     cooldown_status = "✅ Свободно" if remaining == 0 else f"⏳ Активен (осталось {remaining // 60} мин {remaining % 60} сек)"
     
     # Определяем статус работы
@@ -790,8 +804,8 @@ async def show_admin_management(query, context):
         text += f"{'@' + uname if uname else 'ID: ' + uid} — до {exp_str} ({status})\n"
     if not users:
         text += "Список пуст\n"
-    for sid in SUPER_ADMIN_IDS[1:]:
-        text += f"ID: {sid} — 👑 суперадмин (постоянный)\n"
+    for sid in SUPER_ADMIN_IDS:
+        text += f"ID: {sid} — 👑 владелец (без ограничений)\n"
     keyboard = [[InlineKeyboardButton("➕ Добавить админа", callback_data="add_admin")]]
     for uid in users:
         keyboard.append([InlineKeyboardButton(f"❌ Удалить {uid}", callback_data=f"delete_admin_{uid}")])
@@ -974,7 +988,7 @@ async def check_cooldown(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("У вас нет доступа к этой команде.")
         return
     
-    remaining = get_cooldown_remaining()
+    remaining = get_cooldown_remaining(uid)
     last_time = load_cooldown()
     
     if remaining > 0:
